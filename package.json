@@ -1,0 +1,33 @@
+{
+  "name": "@csllc/cs-socketcan",
+  "version": "0.0.1",
+  "description": "Socketcan module for NodeJS",
+  "main": "index.js",
+  "license": "MIT",
+  "author": "cwalden@controls.com",
+  "os": [
+    "linux"
+  ],
+  "dependencies": {
+    "@csllc/j1939": "^1.0.0",
+    "eslint": "^7.10.0",
+    "shelljs": "^0.8.4",
+    "socketcan": "^2.8.0",
+    "stream": "0.0.2"
+  },
+  "devDependencies": {
+    "can-usb-com": "^4.0.0",
+    "chai": "^4.2.0",
+    "chai-events": "0.0.3",
+    "eslint-plugin-mocha": "^8.0.0",
+    "mocha": "^8.1.3"
+  },
+  "scripts": {
+    "test": "mocha test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/csllc/cs-socketcan.git"
+  },
+  "gypfile": true
+}
