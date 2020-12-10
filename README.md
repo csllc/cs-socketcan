@@ -1,6 +1,6 @@
-# NodeJS Socketcan Module
+# NodeJS SocketCAN Module
 
-This module provides a NodeJS interface to the Socketcan driver for Linux.
+This module provides a NodeJS interface to the SocketCAN driver for Linux.
 
 This module is meant to serve as a drop-in replacement for `can-usb-com`, allowing a Soccketcan-compatible adapter to be used in place of [GridConnect CAN-USB-COM](https://www.gridconnect.com/products/usb-can-interface-can-usb-com). This module was specifically developed to be used with [Copperhill Technologies' PiCAN2 hat](https://copperhilltech.com/pican-2-can-bus-interface-for-raspberry-pi/) for the [Raspberry Pi](https://www.raspberrypi.org/).
 

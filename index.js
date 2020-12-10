@@ -7,11 +7,11 @@ const path = require('path');
 const { Duplex } = require('stream');
 
 
-
 // Default configuration used unless overridden by caller
 const DEFAULT_OPTIONS = {
   canRate: 250000,
 };
+
 
 module.exports = class Socketcan extends Duplex {
 
