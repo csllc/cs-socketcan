@@ -84,16 +84,12 @@ module.exports = class Socketcan extends Duplex {
     })
     .then(() => {
       // Close event handler
-      this.on('close', function() {
+      this.on('close', () => {
         this.close();
       });
 
       // Data receive event handler
-      this.can.addListener("onMessage", (msg) => {
-        msg['buf'] = msg['data'];
-        delete this['data'];
-        this.emit('data', msg);
-      });
+      //this.can.addListener("onMessage", this._onData.bind(this));
     })
     .catch((err) => {
       throw err;
@@ -109,7 +105,7 @@ module.exports = class Socketcan extends Duplex {
       this.removeAllListeners();
       if (this.isOpen()) {
         // Close CAN port
-        socketcan.stop();
+        this.can.stop();
       }
       // Close stream
       this.emit('close');
@@ -131,22 +127,34 @@ module.exports = class Socketcan extends Duplex {
       if (this.port === undefined) {
         reject(new Error("CAN port is undefined"));
       } else {
+        // The CAN-USB-COM interface expects a .buf property that is
+        // a <Buffer>, while the underlying 'socketcan' module expects
+        // a .data property that is a <Buffer>. Since we may be looping this back
+        // into the stream -and- writing this message to the bus, just duplicate
+        // whichever property does exist in the msg object.
+        if (msg.buf) {
+          msg['buf'] = Buffer.from(msg['buf']);
+          msg['data'] = Buffer.from(msg['buf']);
+        } else if (msg.data) {
+          msg['buf'] = Buffer.from(msg['data']);
+          msg['data'] = Buffer.from(msg['data']);
+        }
+
         if (msg.buf.length <= 8) {
           // Write message to bus
-          msg['data'] = Buffer.from(msg['buf']);
-          delete msg['buf'];
+
           try {
             this.can.send(msg);
           } catch(err) {
             reject(err);
           }
           
-          this.emit('write', msg);
-
           // If loopback is enabled, push message back into receive stream
           if (this.options.loopback) {
             this.push(msg);
           }
+
+          this.emit('write', msg);
 
           resolve();
         } else {
@@ -180,6 +188,16 @@ module.exports = class Socketcan extends Duplex {
   // Required function for cs-modbus GenericConnection
   isConnected() {
     return this.isOpen();
+  }
+
+  _onData(msg) {
+    if (msg.buf) {
+      msg['buf'] = Buffer.from(msg['buf']);
+      //delete msg['data'];
+    } else if (msg.data) {
+      msg['buf'] = Buffer.from(msg['data']);
+    }
+    this.emit('data', msg);
   }
 
   // Required for a readable stream; we don't need to do anything
