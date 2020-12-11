@@ -2,7 +2,7 @@
 
 This module provides a NodeJS interface to the SocketCAN driver for Linux.
 
-This module is meant to serve as a drop-in replacement for `can-usb-com`, allowing a Soccketcan-compatible adapter to be used in place of [GridConnect CAN-USB-COM](https://www.gridconnect.com/products/usb-can-interface-can-usb-com). This module was specifically developed to be used with [Copperhill Technologies' PiCAN2 hat](https://copperhilltech.com/pican-2-can-bus-interface-for-raspberry-pi/) for the [Raspberry Pi](https://www.raspberrypi.org/).
+This module is meant to serve as a drop-in replacement for `can-usb-com`, allowing a Soccketcan-compatible adapter to be used in place of [GridConnect CAN-USB-COM](https://www.gridconnect.com/products/usb-can-interface-can-usb-com). This module was developed to be used with [Copperhill Technologies' PiCAN2 hat](https://copperhilltech.com/pican-2-can-bus-interface-for-raspberry-pi/) for the [Raspberry Pi](https://www.raspberrypi.org/).
 
 ## Getting Started
 
@@ -16,35 +16,37 @@ npm install @csllc/cs-socketcan
 The following is a sample script that opens the CAN port, writes a single message to the bus, and listens for and prints received messages from the bus.
 
 ```js
-const Can = require('@csllc/cs-socketcan');
+const Can = require('@csllc\cs-socketcan');
 
-let can = new Can({
+let board = new Can({
   canRate: 250000,
 });
 
-can.list()
-.then((ports) => {
-  console.log(ports);
-  return can.open(ports[0].path)
-  .catch((err) => {
+
+board.list()
+  .then(function(ports) {
+    board.on('write', function(msg) {
+      console.log('Write: ', msg);
+    });
+
+    board.on('data', function(msg) {
+      console.log('Msg: ', msg.id.toString(16), msg.buf);
+    });
+
+    console.log('opening ', ports[0].path);
+    return board.open(ports[0].path);
+
+  })
+  .then(function() {
+    board.write({ id: 0x10EF8001, ext: true, buf: Buffer.from([0x45, 0x00, 0x00, 0x04, 0x00, 0x00]) });
+
+  })
+  .catch(function(err) {
+    // Something went wrong...
     console.error(err);
-    process.exit(1);
+    board.close();
+    process.exit(-1);
   });
-});
-
-
-can.on('data', function(msg) {
-  console.log(JSON.stringify(msg, (key, value) => {
-    if ((typeof value === 'number') && (key == "id")) {
-      return value.toString(16).toUpperCase().padStart(8, '0');
-    } else if (typeof value === 'number') {
-      return value.toString(16).toUpperCase().padStart(2, '0');
-    } else {
-      return value;
-    }
-  }));
-});
-
 
 ```
 
@@ -119,7 +121,6 @@ This module's API functions generally return Promises, which are resolved or rej
 Refer to the [documentation on Promises](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise) for details on how to chain requests together, detect errors, etc. 
 
 Refer to the `socketcan` and `node-can` documentation for more information on the components used in this module.
-
 
 ## Development
 
