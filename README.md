@@ -2,7 +2,11 @@
 
 This module provides a NodeJS interface to the SocketCAN driver for Linux.
 
-This module is meant to serve as a drop-in replacement for `can-usb-com`, allowing a Soccketcan-compatible adapter to be used in place of [GridConnect CAN-USB-COM](https://www.gridconnect.com/products/usb-can-interface-can-usb-com). This module was developed to be used with [Copperhill Technologies' PiCAN2 hat](https://copperhilltech.com/pican-2-can-bus-interface-for-raspberry-pi/) for the [Raspberry Pi](https://www.raspberrypi.org/).
+This module is meant to serve as a drop-in replacement for `can-usb-com`, allowing a SocketCAN-compatible adapter to be used in place of [GridConnect CAN-USB-COM](https://www.gridconnect.com/products/usb-can-interface-can-usb-com). 
+
+This module was developed to be used with [Copperhill Technologies' PiCAN2 hat](https://copperhilltech.com/pican-2-can-bus-interface-for-raspberry-pi/) for the [Raspberry Pi](https://www.raspberrypi.org/).
+
+This is also compatible with Kvaser CAN adapters that are supported by the `kvaser_usb` Linux kernel module. This is typically available out of the box in desktop Linux distributions such as Ubuntu, but must be built separately in Raspbian / Raspberry Pi OS. A script is included to perform this task automatically; see the relevant section below for more information.
 
 ## Getting Started
 
@@ -21,7 +25,6 @@ const Can = require('@csllc\cs-socketcan');
 let board = new Can({
   canRate: 250000,
 });
-
 
 board.list()
   .then(function(ports) {
@@ -121,6 +124,22 @@ This module's API functions generally return Promises, which are resolved or rej
 Refer to the [documentation on Promises](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise) for details on how to chain requests together, detect errors, etc. 
 
 Refer to the `socketcan` and `node-can` documentation for more information on the components used in this module.
+
+## Using Kvaser Adapters on Rasbperry Pi
+
+SocketCAN works with Kvaser CAN adapters that are supported by the `kvaser_usb` Linux kernel module. This module is not part of the Raspberry Pi OS (formerly Raspbian) Linux distribution, but can be built from source and installed separately.
+
+The whole build and install process can be performed by running the script:
+
+```
+$ /path/to/node-modules/@csllc/cs-socketcan/tools/rpi-kvaser-usb.sh
+```
+
+This script identifies the currently running Raspberry Pi firmware and kernel versions, retrieves the corresponding kernel source archive, builds the kernel with `kvaser_usb` as a dynamically loaded module, and installs and loads the module. The last steps are run with `sudo` to elevate priveleges, and will prompt for a password.
+
+Currently the script rebuilds the entire kernel, and not simply the missing module alone. This requires approximately 2 GB of free space and takes about 4 hours to complete on a Raspberry Pi 3 Model B.
+
+The script can be run with a mounted external drive as its working directory if free space on the SD card isn't sufficient.
 
 ## Development
 
