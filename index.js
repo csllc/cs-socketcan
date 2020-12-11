@@ -63,6 +63,7 @@ module.exports = class Socketcan extends Duplex {
   open(port) {
     return new Promise((resolve, reject) => {
       // Initialize the CAN port (aka "channel")
+
       try {
         // Create the channel
         this.can = socketcan.createRawChannel(port, this.enableTimestamps);
@@ -89,7 +90,7 @@ module.exports = class Socketcan extends Duplex {
       });
 
       // Data receive event handler
-      //this.can.addListener("onMessage", this._onData.bind(this));
+      this.can.addListener("onMessage", this._onData.bind(this));
     })
     .catch((err) => {
       throw err;
@@ -166,7 +167,7 @@ module.exports = class Socketcan extends Duplex {
       throw err;
     });
   }
-    
+  
   status() {
     return new Promise((resolve, reject) => {
       if (this.port === undefined) {
