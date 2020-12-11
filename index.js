@@ -34,7 +34,7 @@ module.exports = class Socketcan extends Duplex {
 
   // Returns a promise that resolves to a list of available CAN ports
   list() {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       if (process.platform != "linux") {
         resolve([]);
       } else {
