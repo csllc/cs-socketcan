@@ -1,0 +1,108 @@
+# Test the package, then publish it to npm.
+#
+# Triggered by pushing a version tag, e.g.:
+#   npm version patch      # bumps package.json and creates tag vX.Y.Z
+#   git push --follow-tags
+#
+# Publishing uses npm trusted publishing (OIDC), so no npm token is stored in
+# GitHub. The trusted publisher on npmjs.com must name this repository and the
+# workflow file "release.yml".
+#
+# The module is plain JavaScript. The only native code is in the socketcan
+# dependency, which is compiled with node-gyp when it is installed (it does
+# not ship prebuilt binaries), so there is nothing to build for the package
+# itself. The tests run against a virtual CAN interface (vcan0), on both x64
+# and arm64 runners since the module is also used on Raspberry Pi.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+
+      # Some runner kernels ship vcan in linux-modules-extra rather than the
+      # base modules package, so only install that when vcan is missing
+      - name: Set up virtual CAN interface
+        run: |
+          if ! modinfo vcan > /dev/null 2>&1; then
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y linux-modules-extra-$(uname -r)
+          fi
+          sudo modprobe can
+          sudo modprobe can_raw
+          sudo modprobe vcan
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set up vcan0
+          ip -details link show vcan0
+
+      # Also compiles the socketcan native addon from source
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+        env:
+          CAN_INTERFACE: vcan0
+
+  publish:
+    name: Publish to npm
+    needs: test
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: read
+      id-token: write   # required for npm trusted publishing
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - name: Check that the tag matches package.json
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $VERSION"
+            exit 1
+          fi
+
+      - name: Check package contents
+        run: npm pack --dry-run
+
+      - name: Publish
+        run: npm publish

@@ -1,7 +1,7 @@
 'use strict';
 
 const socketcan = require('socketcan');
-const shell = require('shelljs');
+const fs = require('fs');
 const path = require('path');
 
 const { Duplex } = require('stream');
@@ -10,7 +10,16 @@ const { Duplex } = require('stream');
 // Default configuration used unless overridden by caller
 const DEFAULT_OPTIONS = {
   canRate: 250000,
+  loopback: false,
 };
+
+// Network interfaces are listed in sysfs. We can't use os.networkInterfaces()
+// because it only returns interfaces that have been assigned an IP address.
+const SYSFS_NET = '/sys/class/net';
+
+// Interface type for CAN, defined in Linux source at
+// include/uapi/linux/if_arp.h
+const ARPHRD_CAN = 280;
 
 
 module.exports = class Socketcan extends Duplex {
@@ -28,8 +37,8 @@ module.exports = class Socketcan extends Duplex {
 
   // Sets (or re-sets) the configuration options
   setOptions(options) {
-    // Save for later use
-    this.options = Object.assign(DEFAULT_OPTIONS, options);
+    // Save for later use. Copy the defaults so that they aren't changed.
+    this.options = Object.assign({}, DEFAULT_OPTIONS, options);
   }
 
   // Returns a promise that resolves to a list of available CAN ports
@@ -37,26 +46,25 @@ module.exports = class Socketcan extends Duplex {
     return new Promise((resolve) => {
       if (process.platform != "linux") {
         resolve([]);
-      } else {
-        // We can't use os.networkInterfaces() because it only returns
-        // interfaces that have been assigned an IP address. Instead, we look
-        // directly in sysfs.
-        let sysfsInterfaces = '/sys/class/net';
-        let channels = [];
-
-        let interfaces = shell.ls(sysfsInterfaces);
-        interfaces.forEach((iface) => {
-          let type = Number(shell.cat(path.join(sysfsInterfaces, iface, "type")));
-          if (type == 280) { // CAN, defined in Linux source at include/uapi/linux/if_arp.h
-            channels.push({ path: iface });
-          }
-        });
-
-        resolve(channels);
+        return;
       }
-    })
-    .catch((err) => {
-      throw err;
+
+      let channels = [];
+
+      fs.readdirSync(SYSFS_NET).forEach((iface) => {
+        let type;
+        try {
+          type = Number(fs.readFileSync(path.join(SYSFS_NET, iface, 'type'), 'utf8'));
+        } catch {
+          // The interface may have disappeared since the directory was read
+          return;
+        }
+        if (type === ARPHRD_CAN) {
+          channels.push({ path: iface });
+        }
+      });
+
+      resolve(channels);
     });
   }
 
@@ -67,40 +75,38 @@ module.exports = class Socketcan extends Duplex {
       try {
         // Create the channel
         this.can = socketcan.createRawChannel(port, this.enableTimestamps);
-        
+
+        // Data receive event handler
+        this.can.addListener("onMessage", this._onData.bind(this));
+
         // Start the bus
         this.can.start();
 
         this.port = port;
         this._configure();
         this.isReady = true;
+
+        // Close event handler
+        this.on('close', () => {
+          this.close();
+        });
+
         this.emit('open');
 
         resolve();
       } catch(err) {
+        this.can = undefined;
         this.emit('error', err); // emit() instead of throw, matching CAN-USB-COM behavior
         reject(err);
       }
-
-    })
-    .then(() => {
-      // Close event handler
-      this.on('close', () => {
-        this.close();
-      });
-
-      // Data receive event handler
-      this.can.addListener("onMessage", this._onData.bind(this));
-    })
-    .catch((err) => {
-      throw err;
     });
   }
 
   close() {
     return new Promise((resolve, reject) => {
       if (this.port === undefined) {
-        reject(new Error("CAN port is undefined"))
+        reject(new Error("CAN port is undefined"));
+        return;
       }
       // Remove listeners
       this.removeAllListeners();
@@ -110,74 +116,70 @@ module.exports = class Socketcan extends Duplex {
       }
       // Close stream
       this.emit('close');
-      resolve();
-    })
-    .then(() => {
+
       this.can = undefined;
       this.port = undefined;
       this.isReady = false;
       this.push(null);
-    })
-    .catch((err) => {
-      throw err;
+
+      resolve();
     });
   }
 
   write(msg) {
     return new Promise((resolve, reject) => {
-      if (this.port === undefined) {
-        reject(new Error("CAN port is undefined"));
-      } else {
-        // The CAN-USB-COM interface expects a .buf property that is
-        // a <Buffer>, while the underlying 'socketcan' module expects
-        // a .data property that is a <Buffer>. Since we may be looping this back
-        // into the stream -and- writing this message to the bus, just duplicate
-        // whichever property does exist in the msg object.
-        if (msg.buf) {
-          msg['buf'] = Buffer.from(msg['buf']);
-          msg['data'] = Buffer.from(msg['buf']);
-        } else if (msg.data) {
-          msg['buf'] = Buffer.from(msg['data']);
-          msg['data'] = Buffer.from(msg['data']);
-        }
-
-        if (msg.buf.length <= 8) {
-          // Write message to bus
-
-          try {
-            this.can.send(msg);
-          } catch(err) {
-            reject(err);
-          }
-          
-          // If loopback is enabled, push message back into receive stream
-          if (this.options.loopback) {
-            this.push(msg);
-          }
-
-          this.emit('write', msg);
-
-          resolve();
-        } else {
-          reject(new Error("Tried to send invalid CAN data"));
-        }
+      if (!this.isOpen()) {
+        reject(new Error("CAN port is not open"));
+        return;
       }
-    })
-    .catch((err) => {
-      throw err;
+
+      // The CAN-USB-COM interface expects a .buf property that is
+      // a <Buffer>, while the underlying 'socketcan' module expects
+      // a .data property that is a <Buffer>. Since we may be looping this back
+      // into the stream -and- writing this message to the bus, just duplicate
+      // whichever property does exist in the msg object.
+      if (msg.buf) {
+        msg.buf = Buffer.from(msg.buf);
+        msg.data = Buffer.from(msg.buf);
+      } else if (msg.data) {
+        msg.buf = Buffer.from(msg.data);
+        msg.data = Buffer.from(msg.data);
+      } else {
+        msg.buf = Buffer.alloc(0);
+        msg.data = Buffer.alloc(0);
+      }
+
+      if (msg.buf.length > 8) {
+        reject(new Error("Tried to send invalid CAN data"));
+        return;
+      }
+
+      // Write message to bus
+      try {
+        this.can.send(msg);
+      } catch(err) {
+        reject(err);
+        return;
+      }
+
+      // If loopback is enabled, push message back into receive stream
+      if (this.options.loopback) {
+        this.push(msg);
+      }
+
+      this.emit('write', msg);
+
+      resolve();
     });
   }
-  
+
   status() {
     return new Promise((resolve, reject) => {
-      if (this.port === undefined) {
+      if (this.port === undefined || this.port === null) {
         reject(new Error("CAN port is undefined"));
       } else {
-        return this.status;
+        resolve({ port: this.port, open: !!this.isOpen() });
       }
-    })
-    .catch((err) => {
-      throw err;
     });
   }
 
@@ -193,10 +195,9 @@ module.exports = class Socketcan extends Duplex {
 
   _onData(msg) {
     if (msg.buf) {
-      msg['buf'] = Buffer.from(msg['buf']);
-      //delete msg['data'];
+      msg.buf = Buffer.from(msg.buf);
     } else if (msg.data) {
-      msg['buf'] = Buffer.from(msg['data']);
+      msg.buf = Buffer.from(msg.data);
     }
     this.emit('data', msg);
   }
@@ -204,12 +205,15 @@ module.exports = class Socketcan extends Duplex {
   // Required for a readable stream; we don't need to do anything
   _read() {}
 
-  // Required for a writable stream; we don't need to do anything
-  _write() {}
+  // Required for a writable stream. write() is overridden above, so this is
+  // only reached through the stream internals (e.g. end(chunk)).
+  _write(chunk, encoding, cb) {
+    this.write(chunk).then(() => cb(), cb);
+  }
 
   _configure() {
 
     return;
   }
 
-}
+};

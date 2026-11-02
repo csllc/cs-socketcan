@@ -10,17 +10,24 @@ This is also compatible with Kvaser CAN adapters that are supported by the `kvas
 
 ## Getting Started
 
-The following assumes that [NodeJS](https://nodejs.org) is already installed. This module was developed using Node v12.18.4 for Raspberry Pi OS (Debian GNU/Linux) 10.6.
+This module requires Linux and NodeJS 22.22.2 or later (or 24.15.0 or later).
+
+It depends on the [`socketcan`](https://github.com/sebi2k1/node-can) module, which is compiled from source when it is installed, so the native build tools must be installed first. On Debian or Raspberry Pi OS:
+```
+sudo apt install build-essential python3
+```
 
 To install this module, run:
 ```
 npm install @csllc/cs-socketcan
 ```
 
+The CAN interface must be configured and brought up before it is opened; see [Configuration](#configuration).
+
 The following is a sample script that opens the CAN port, writes a single message to the bus, and listens for and prints received messages from the bus.
 
 ```js
-const Can = require('@csllc\cs-socketcan');
+const Can = require('@csllc/cs-socketcan');
 
 let board = new Can({
   canRate: 250000,
@@ -59,14 +66,21 @@ JavaScript examples are available in the `examples` folder.
 
 ## Configuration
 
-The constructor accepts an object that specifies the desired configuration. The CAN adapter is set up before the `open` method resolves, so once it is complete, the CAN interface is ready for use.
+The constructor accepts an object that specifies the desired configuration. Once the `open` method resolves, the CAN interface is ready for use.
+
+The bit rate is a property of the Linux network interface, and setting it needs root privileges, so this module does not set it; the `canRate` option is accepted for compatibility with `can-usb-com` but is not used. Configure the interface beforehand, for example:
+
+```
+sudo ip link set can0 type can bitrate 250000
+sudo ip link set up can0
+```
 
 The default options are shown in the following example. Any of them may be omitted from the constructor's option object to use their default value.
 
 ```js
 let can = new Can({
 
-  // bit rate on the CAN bus
+  // bit rate on the CAN bus (not used; see above)
   canRate: 250000,
 
   // useful for testing, each sent packet is also received
@@ -127,7 +141,7 @@ Refer to the `socketcan` and `node-can` documentation for more information on th
 
 ## Using Kvaser Adapters on Rasbperry Pi
 
-SocketCAN works with Kvaser CAN adapters that are supported by the `kvaser_usb` Linux kernel module. This module is not part of the Raspberry Pi OS (formerly Raspbian) Linux distribution, but can be built from source and installed separately.
+SocketCAN works with Kvaser CAN adapters that are supported by the `kvaser_usb` Linux kernel module. Older Raspberry Pi OS (formerly Raspbian) kernels did not include this module; check whether yours does with `modinfo kvaser_usb`. If it's missing, it can be built from source and installed separately.
 
 The whole build and install process can be performed by running the script:
 
@@ -145,16 +159,44 @@ The script can be run with a mounted external drive as its working directory if 
 
 Before updating or modifying this package, please
 
- - Lint any changes using `eslint`.
- - Confirm that unit tests pass, noting the exceptions described in the next section.
+ - Lint any changes using `npm run lint`.
+ - Confirm that unit tests pass (`npm test`).
 
-In order to run unit tests (`npm test`), at least one PCAN-USB device must be connected to the computer.
+The unit tests need a CAN network interface that is up. No hardware is needed: a virtual CAN interface works, and is what the release workflow uses:
 
-The `pingpong` test is currently configured to use `cs-socketcan` for one adapter, and `can-usb-com` for the other. These must be connected via a properly terminated bus.
+```
+sudo modprobe vcan
+sudo ip link add dev vcan0 type vcan
+sudo ip link set up vcan0
+CAN_INTERFACE=vcan0 npm test
+```
 
-Do not run any tests on a bus with active traffic, since receiving unexpected CAN packets may confuse the tests.
+If `CAN_INTERFACE` is not set, the tests use the first CAN interface found. To test with real hardware, set it to that interface (e.g. `CAN_INTERFACE=can0`). Do not run the tests on a bus with active traffic, since receiving unexpected CAN packets may confuse the tests.
+
+The `pingpong` example (`examples/pingpong.js`) uses `@csllc/cs-socketcan` for one adapter, and `@csllc/can-usb-com` for the other. These must be connected via a properly terminated bus. It also needs `@csllc/can-usb-com` and `@csllc/j1939`, which are not dev dependencies of this package; install them with `npm install --no-save @csllc/can-usb-com @csllc/j1939`.
+
+## Distribution
+
+The module is plain JavaScript. Its only native code is in the `socketcan` dependency, which is a Node-API addon compiled with `node-gyp` when it is installed.
+
+### Releasing
+
+Releases are published by the GitHub Actions workflow in `.github/workflows/release.yml`, which runs when a version tag is pushed:
+
+ 1. Optionally, run the tests locally against real hardware (the CI runners only have virtual CAN interfaces)
+ 1. `npm version patch` (or `minor` / `major`), which updates `package.json` and creates the tag `vX.Y.Z`
+ 1. `git push --follow-tags`
+
+The workflow lints the code and runs the tests against a virtual CAN interface on Linux x64 and arm64 with NodeJS 22 and 24. It then publishes the package to npm. Publishing uses npm trusted publishing, so no npm token is stored in GitHub; the package's trusted publisher on npmjs.com must name this repository and the workflow file `release.yml`.
 
 ## Functionality Limitations
 
  - No hardware loopback support - loopback is implemented in this module by pushing messages back into the stream in the `write()` method
  - This module does not implement message filtering
+ - This module does not set the bit rate (see [Configuration](#configuration))
+
+## Licensing and Dependencies
+
+This project is licensed under the MIT license - see the [LICENSE](LICENSE) file for details.
+
+It uses [socketcan](https://github.com/sebi2k1/node-can), which is also MIT licensed.

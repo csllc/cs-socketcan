@@ -1,41 +1,27 @@
-# Specifies intentionally untracked files to ignore when using Git
-# http://git-scm.com/docs/gitignore
+# Logs
+*.log
+npm-debug.log*
 
-*.exe
-*.exp
-*.obj
+# Dependencies
+node_modules/
 
+# Build output (from native dependencies built in place)
+build/
+
+# Coverage
+coverage/
+
+# Editors and OS files
 *~
 *.sw[mnpcod]
-*.log
-*.tmp
-*.tmp.*
-log.txt
 *.sublime-project
 *.sublime-workspace
 .vscode/
-npm-debug.log*
-
 .idea/
-.sass-cache/
-.tmp/
-.versions/
-coverage/
-dist/
-node_modules/
-tmp/
-temp/
-#hooks/
-platforms/
-#plugins/
-#plugins/android.json
-#plugins/ios.json
-www/
-WWW/
-$RECYCLE.BIN/
 .DS_Store
 Thumbs.db
-UserInterfaceState.xcuserstate
-doc/~*
-build/
-binding/
+$RECYCLE.BIN/
+
+# Kernel source downloaded by tools/rpi-kvaser-usb.sh when run in place
+linux-*/
+linux-*.zip

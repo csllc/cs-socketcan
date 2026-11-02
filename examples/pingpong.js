@@ -1,15 +1,15 @@
 /**
- * Implements a pingpong test using 2 CAN-USB-COM modules
+ * Implements a pingpong test between a SocketCAN interface and a CAN-USB-COM
  *
  * Note you must
- *   npm install can-usb-com
- * in order for this to work.to
+ *   npm install --no-save @csllc/can-usb-com @csllc/j1939
+ * in order for this to work.
  *
  * The two devices must be connected together and properly terminated (so that
- * CANBUS communication is physically possible).physically
+ * CANBUS communication is physically possible).
  *
  * This script opens both devices, and each device sends a message to the other.
- * When a device receives a message from the other, it immediately sends it back.it
+ * When a device receives a message from the other, it immediately sends it back.
  *
  * We use the 'priority' field of the message ID to keep track of who originated
  * the message.
@@ -19,7 +19,7 @@
  */
 
 const Socketcan = require('..');
-const CanUSBCOM = require('can-usb-com');
+const CanUSBCOM = require('@csllc/can-usb-com');
 
 const J1939 = require('@csllc/j1939');
 
@@ -130,7 +130,7 @@ class Pinger extends J1939 {
 
 // The two instances of pingers
 
-let device1 = new Pinger(can1, { //PCAN-USB
+let device1 = new Pinger(can1, { //SocketCAN
   address: 0x80,
   priority: 4,
   fill: 0x55,
