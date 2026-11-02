@@ -25,17 +25,34 @@ const CAN_OPTIONS = {
 };
 
 
+const VCAN_HELP =
+  'Set up a virtual one with:\n' +
+  '  sudo modprobe vcan\n' +
+  '  sudo ip link add dev vcan0 type vcan\n' +
+  '  sudo ip link set up vcan0';
+
 // Returns the name of the CAN interface to test with
 async function getInterface(can) {
+  let ports = (await can.list()).map((port) => port.path);
+
   if (process.env.CAN_INTERFACE) {
+    if (!ports.includes(process.env.CAN_INTERFACE)) {
+      throw new Error(`CAN interface ${process.env.CAN_INTERFACE} not found ` +
+        `(found: ${ports.join(', ') || 'none'}). ${VCAN_HELP}`);
+    }
     return process.env.CAN_INTERFACE;
   }
-  let ports = await can.list();
   if (ports.length === 0) {
-    throw new Error('No CAN interface found (set up vcan0, or set CAN_INTERFACE)');
+    throw new Error(`No CAN interface found. ${VCAN_HELP}`);
   }
-  return ports[0].path;
+  return ports[0];
 }
+
+// Check for the interface once, up front, so that a missing interface gives
+// one clear failure instead of a failure in every block
+before(async () => {
+  await getInterface(new CsSocketcan());
+});
 
 // Creates an instance and opens it
 async function openCan(options) {
@@ -45,6 +62,26 @@ async function openCan(options) {
   await can.open(iface);
   await p;
   return can;
+}
+
+
+// Resolves with the next frame received by `can` that has the given ID, so
+// that other traffic on the bus is ignored
+function waitForFrame(can, id, timeout = 1000) {
+  return new Promise((resolve, reject) => {
+    let timer = setTimeout(() => {
+      can.removeListener('data', onData);
+      reject(new Error(`Frame 0x${id.toString(16)} not received`));
+    }, timeout);
+    function onData(msg) {
+      if (msg.id === id) {
+        clearTimeout(timer);
+        can.removeListener('data', onData);
+        resolve(msg);
+      }
+    }
+    can.on('data', onData);
+  });
 }
 
 
@@ -106,9 +143,6 @@ describe('List available devices', () => {
 
     });
 
-    if (process.env.CAN_INTERFACE) {
-      expect(result.map((port) => port.path)).to.include(process.env.CAN_INTERFACE);
-    }
   });
 });
 
@@ -214,7 +248,7 @@ describe('Send a Message', () => {
 
   // after all tests in this block
   after(async () => {
-    await can.close();
+    if (can) await can.close();
   });
 });
 
@@ -275,7 +309,7 @@ describe('Receive a Message', () => {
 
   // after all tests in this block
   after(async () => {
-    await can.close();
+    if (can) await can.close();
   });
 });
 
@@ -294,47 +328,43 @@ describe('Send and receive through SocketCAN', () => {
     rx = await openCan(CAN_OPTIONS);
   });
 
-  it('should receive an extended frame sent by another socket', (done) => {
+  it('should receive an extended frame sent by another socket', async () => {
 
-    rx.once('data', (msg) => {
-      expect(msg.id).to.be.eq(0x10EF8081);
-      expect(msg.ext).to.be.eq(true);
-      expect(msg.buf).to.be.instanceof(Buffer);
-      expect(msg.buf).to.deep.eq(Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]));
-      done();
-    });
+    let p = waitForFrame(rx, 0x10EF8081);
+    await tx.write({ id: 0x10EF8081, ext: true, buf: [1, 2, 3, 4, 5, 6, 7, 8] });
+    let msg = await p;
 
-    tx.write({ id: 0x10EF8081, ext: true, buf: [1, 2, 3, 4, 5, 6, 7, 8] }).catch(done);
+    expect(msg.ext).to.be.eq(true);
+    expect(msg.rtr).to.be.eq(false);
+    expect(msg.buf).to.be.instanceof(Buffer);
+    expect(msg.buf).to.deep.eq(Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]));
   });
 
-  it('should receive a standard frame sent by another socket', (done) => {
+  it('should receive a standard frame sent by another socket', async () => {
 
-    rx.once('data', (msg) => {
-      expect(msg.id).to.be.eq(0x123);
-      expect(msg.ext).to.be.eq(false);
-      expect(msg.buf).to.deep.eq(Buffer.from([0xAA, 0x55]));
-      done();
-    });
+    let p = waitForFrame(rx, 0x123);
+    await tx.write({ id: 0x123, ext: false, buf: [0xAA, 0x55] });
+    let msg = await p;
 
-    tx.write({ id: 0x123, ext: false, buf: [0xAA, 0x55] }).catch(done);
+    expect(msg.ext).to.be.eq(false);
+    expect(msg.rtr).to.be.eq(false);
+    expect(msg.buf).to.deep.eq(Buffer.from([0xAA, 0x55]));
   });
 
   it('should not receive its own frames', async () => {
 
-    let received = false;
-    let onData = () => { received = true; };
-    tx.on('data', onData);
-
+    // rx receiving the frame shows that it was sent; tx should not get it
+    let own = waitForFrame(tx, 0x124, 200).then(() => true, () => false);
+    let p = waitForFrame(rx, 0x124);
     await tx.write({ id: 0x124, ext: false, buf: [] });
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await p;
 
-    tx.removeListener('data', onData);
-    expect(received).to.be.eq(false);
+    expect(await own).to.be.eq(false);
   });
 
   after(async () => {
-    await tx.close();
-    await rx.close();
+    if (tx) await tx.close();
+    if (rx) await rx.close();
   });
 });
 
@@ -378,7 +408,7 @@ describe('Loopback Mode', () => {
 
   // after all tests in this block
   after(async () => {
-    await can.close();
+    if (can) await can.close();
   });
 });
 
@@ -435,6 +465,6 @@ describe('Implement a standard stream interface', () => {
 
   // after all tests in this block
   after(async () => {
-    await can.close();
+    if (can) await can.close();
   });
 });

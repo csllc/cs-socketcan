@@ -194,6 +194,11 @@ module.exports = class Socketcan extends Duplex {
   }
 
   _onData(msg) {
+    // The socketcan module only sets ext and rtr when they are true; always
+    // set them, to match can-usb-com
+    msg.ext = !!msg.ext;
+    msg.rtr = !!msg.rtr;
+
     if (msg.buf) {
       msg.buf = Buffer.from(msg.buf);
     } else if (msg.data) {
