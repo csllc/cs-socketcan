@@ -113,6 +113,8 @@ The module emits the following events:
  - `status` when the status of the port changes (see [Status](#status))
  - `close` when the port is closed
 
+`close()` removes all listeners from the instance, including the application's, and stops anything piped from it. If the same instance is opened again, attach the listeners (and pipes) again after opening it. (`@csllc/cs-canbus-universal` does this for its own listeners, so listeners attached to it are not affected.)
+
 To listen for the events, use the typical NodeJS EventEmitter pattern:
 
 ```js

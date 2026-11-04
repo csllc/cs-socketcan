@@ -299,7 +299,8 @@ module.exports = class Socketcan extends Duplex {
       this.isReady = false;
       this._disconnected = false;
       this._bitrate = null;
-      this.push(null);
+      // The readable side of this stream is not ended (with push(null)), so
+      // that the port can be opened again and receive more data
 
       resolve();
     });

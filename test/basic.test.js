@@ -664,3 +664,29 @@ describe('Implement a standard stream interface', () => {
     if (can) await can.close();
   });
 });
+
+
+describe('Closing and reopening', () => {
+
+  it('should keep receiving data after being closed and opened again', async () => {
+
+    let can = new CsSocketcan(CAN_OPTIONS);
+    let iface = await getInterface(can);
+    await can.open(iface);
+    await can.close();
+    await can.open(iface);
+
+    // close() removes all listeners, so add these after opening again
+    let errors = [];
+    can.on('error', (err) => errors.push(err));
+    let p = new Promise((resolve) => can.once('data', resolve));
+
+    // here we simulate a receipt of a message from the socketcan module
+    can._onData({ id: 0x125, ext: false, rtr: false, data: Buffer.from([1, 2]) });
+
+    expect((await p).id).to.eq(0x125);
+    expect(errors).to.deep.eq([]);
+
+    await can.close();
+  });
+});
