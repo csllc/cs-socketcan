@@ -102,7 +102,7 @@ The module emits the following events:
 
  - `open` when the serial port is successfully opened
  - `error` if an error occurs
- - `data` when an incoming CAN bus frame is received
+ - `data` when an incoming CAN bus frame is received (error frames are not emitted; see [Error Statistics](#error-statistics))
  - `write` when an outgoing CAN bus frame is sent to the device (the event is emitted before the frame is actually sent on the bus)
  - `close` when the port is closed
 
@@ -138,6 +138,42 @@ This module's API functions generally return Promises, which are resolved or rej
 Refer to the [documentation on Promises](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise) for details on how to chain requests together, detect errors, etc. 
 
 Refer to the `socketcan` and `node-can` documentation for more information on the components used in this module.
+
+### Error Statistics
+
+`errorStats()` returns a Promise that resolves with bus error statistics. The object has the same fields in all of the CAN adapter modules used by `@csllc/cs-canbus-universal`; a field whose value is not available is `null`.
+
+```js
+{
+  since: Date,            // when counting started (when the port was opened); null if never opened
+  txFrames: 0,            // data/remote frames sent
+  rxFrames: 0,            // data/remote frames received
+  errorFrames: 0,         // bus errors (error frames on the bus) reported by the adapter
+  errorPercent: 0,        // errorFrames / (txFrames + rxFrames + errorFrames) * 100; 0 if nothing was counted
+  errors: {               // errorFrames by type; these add up to errorFrames
+    bit: 0,               // bit errors, including bit0/bit1 errors
+    stuff: 0,             // stuffing errors
+    form: 0,              // form errors
+    crc: 0,               // CRC errors
+    ack: 0,               // acknowledgement errors (no ACK on transmission)
+    other: 0,             // bus errors of an unreported or other type
+  },
+  arbitrationLost: 0,     // transmissions that lost arbitration (normal on a busy bus; not an error frame)
+  overruns: 0,            // receive or transmit buffer overflows (frames were lost)
+  busOff: 0,              // times the controller went bus-off
+  state: 'error-active',  // 'error-active', 'error-warning', 'error-passive', 'bus-off', 'stopped', 'sleeping', or null
+  txErrorCounter: 0,      // transmit error counter (TEC)
+  rxErrorCounter: 0,      // receive error counter (REC)
+}
+```
+
+The counters are reset when the port is opened, and cover only this instance: frames sent by this instance, frames this instance received (which include frames sent by other programs on the same interface), and error frames reported while it was open. After the port is closed, the counters keep their final values and `state`, `txErrorCounter` and `rxErrorCounter` are `null`.
+
+In this module:
+
+ - Error frames are reported by the kernel driver. Many drivers only report bus errors (as opposed to state changes) when bus error reporting is turned on, which is done when the interface is configured, e.g. `sudo ip link set can0 type can bitrate 250000 berr-reporting on`. Drivers that can't report bus errors, or report them without their type, leave `errors` at zero or count them as `other`.
+ - `state`, `txErrorCounter` and `rxErrorCounter` are read from the interface with `ip -details -json link show` (from iproute2) if possible. Otherwise they are the last values reported in an error frame, and `null` until one is received. Virtual (`vcan`) interfaces have no state.
+ - Error frames are counted, and are not emitted as `data` events.
 
 ## Using Kvaser Adapters on Rasbperry Pi
 

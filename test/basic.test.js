@@ -413,6 +413,145 @@ describe('Loopback Mode', () => {
 });
 
 
+// Fields of the object that errorStats() resolves with. This is common to all
+// of the CAN adapter modules used by @csllc/cs-canbus-universal.
+const ERROR_STATS_KEYS = [
+  'since', 'txFrames', 'rxFrames', 'errorFrames', 'errorPercent', 'errors',
+  'arbitrationLost', 'overruns', 'busOff', 'state', 'txErrorCounter',
+  'rxErrorCounter',
+];
+const ERROR_TYPES = ['bit', 'stuff', 'form', 'crc', 'ack', 'other'];
+
+// Builds an error frame as delivered by the socketcan module
+function errorFrame(errClass, data = []) {
+  let buf = Buffer.alloc(8);
+  Buffer.from(data).copy(buf);
+  return { id: errClass, err: true, data: buf };
+}
+
+describe('Error statistics', () => {
+
+  it('should report empty statistics before the port is opened', async () => {
+
+    let stats = await new CsSocketcan(CAN_OPTIONS).errorStats();
+
+    expect(stats).to.have.all.keys(ERROR_STATS_KEYS);
+    expect(stats.since).to.be.eq(null);
+    expect(stats.txFrames).to.be.eq(0);
+    expect(stats.rxFrames).to.be.eq(0);
+    expect(stats.errorFrames).to.be.eq(0);
+    expect(stats.errorPercent).to.be.eq(0);
+    expect(stats.state).to.be.eq(null);
+    expect(stats.txErrorCounter).to.be.eq(null);
+    expect(stats.rxErrorCounter).to.be.eq(null);
+  });
+
+  describe('on an open port', () => {
+
+    let tx = null;
+    let rx = null;
+
+    before(async () => {
+      tx = await openCan(CAN_OPTIONS);
+      rx = await openCan(CAN_OPTIONS);
+    });
+
+    it('should have the common fields', async () => {
+
+      let stats = await tx.errorStats();
+
+      expect(stats).to.have.all.keys(ERROR_STATS_KEYS);
+      expect(stats.errors).to.have.all.keys(ERROR_TYPES);
+      expect(stats.since).to.be.instanceof(Date);
+      expect(stats.state === null || typeof stats.state === 'string').to.be.eq(true);
+    });
+
+    it('should count frames sent and received', async () => {
+
+      let txBefore = await tx.errorStats();
+      let rxBefore = await rx.errorStats();
+
+      let p = waitForFrame(rx, 0x125);
+      await tx.write({ id: 0x125, ext: false, buf: [1] });
+      await p;
+
+      let txAfter = await tx.errorStats();
+      let rxAfter = await rx.errorStats();
+
+      expect(txAfter.txFrames - txBefore.txFrames).to.be.eq(1);
+      expect(rxAfter.rxFrames - rxBefore.rxFrames).to.be.gte(1);
+    });
+
+    it('should count and classify bus errors without passing them on as data', async () => {
+
+      let before = await rx.errorStats();
+      let received = 0;
+      let onData = () => { received++; };
+      rx.on('data', onData);
+
+      // Error classes and data bytes from linux/can/error.h
+      rx._onData(errorFrame(0x088, [0, 0, 0x04])); // stuff error
+      rx._onData(errorFrame(0x088, [0, 0, 0x02])); // form error
+      rx._onData(errorFrame(0x088, [0, 0, 0x10])); // bit1 error
+      rx._onData(errorFrame(0x088, [0, 0, 0x00, 0x08])); // CRC sequence error
+      rx._onData(errorFrame(0x0A0)); // no ACK
+      rx._onData(errorFrame(0x080)); // unspecified bus error
+      rx._onData(errorFrame(0x002)); // arbitration lost
+      rx._onData(errorFrame(0x004, [0, 0x01])); // RX overflow
+
+      rx.removeListener('data', onData);
+      let after = await rx.errorStats();
+
+      expect(received).to.be.eq(0);
+      expect(after.errorFrames - before.errorFrames).to.be.eq(6);
+      for (let type of ERROR_TYPES) {
+        expect(after.errors[type] - before.errors[type], type).to.be.eq(1);
+      }
+      expect(after.arbitrationLost - before.arbitrationLost).to.be.eq(1);
+      expect(after.overruns - before.overruns).to.be.eq(1);
+      expect(after.rxFrames).to.be.eq(before.rxFrames);
+
+      let total = after.txFrames + after.rxFrames + after.errorFrames;
+      expect(after.errorPercent).to.be.closeTo(after.errorFrames / total * 100, 1e-9);
+    });
+
+    it('should track the state reported in error frames', async () => {
+
+      // Use only what the error frames report, not what the interface reports
+      let readCanInfo = rx._readCanInfo;
+      rx._readCanInfo = async () => null;
+
+      try {
+        rx._onData(errorFrame(0x204, [0, 0x08, 0, 0, 0, 0, 100, 3])); // TX warning
+        let stats = await rx.errorStats();
+        expect(stats.state).to.be.eq('error-warning');
+        expect(stats.txErrorCounter).to.be.eq(100);
+        expect(stats.rxErrorCounter).to.be.eq(3);
+
+        rx._onData(errorFrame(0x004, [0, 0x20])); // TX passive
+        expect((await rx.errorStats()).state).to.be.eq('error-passive');
+
+        let busOff = (await rx.errorStats()).busOff;
+        rx._onData(errorFrame(0x040)); // bus off
+        stats = await rx.errorStats();
+        expect(stats.state).to.be.eq('bus-off');
+        expect(stats.busOff - busOff).to.be.eq(1);
+
+        rx._onData(errorFrame(0x100)); // restarted
+        expect((await rx.errorStats()).state).to.be.eq('error-active');
+      } finally {
+        rx._readCanInfo = readCanInfo;
+      }
+    });
+
+    after(async () => {
+      if (tx) await tx.close();
+      if (rx) await rx.close();
+    });
+  });
+});
+
+
 describe('Implement a standard stream interface', () => {
 
   let can = null;
