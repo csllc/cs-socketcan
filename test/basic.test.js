@@ -197,7 +197,8 @@ describe('Send a Message', () => {
   it('should report its status', async () => {
 
     let status = await can.status();
-    expect(status.open).to.be.eq(true);
+    expect(status).to.have.all.keys('port', 'connection', 'state', 'bitrate');
+    expect(status.connection).to.be.eq('connected');
     expect(status.port).to.be.a('string');
   });
 
@@ -548,6 +549,62 @@ describe('Error statistics', () => {
       if (tx) await tx.close();
       if (rx) await rx.close();
     });
+  });
+});
+
+
+describe('Status', () => {
+
+  const CLOSED = { port: null, connection: 'closed', state: null, bitrate: null };
+  const STATES = ['error-active', 'error-warning', 'error-passive', 'bus-off', 'stopped', 'sleeping', null];
+
+  it('should report a closed port before it is opened', async () => {
+
+    expect(await new CsSocketcan(CAN_OPTIONS).status()).to.deep.eq(CLOSED);
+  });
+
+  it('should report and emit the status when the port is opened and closed', async () => {
+
+    let can = new CsSocketcan(CAN_OPTIONS);
+    let iface = await getInterface(can);
+    let events = [];
+    can.on('status', (status) => events.push(status));
+
+    await can.open(iface);
+    let status = await can.status();
+
+    expect(status.port).to.be.eq(iface);
+    expect(status.connection).to.be.eq('connected');
+    expect(status.state).to.be.oneOf(STATES);
+    // A virtual (vcan) interface has no bit rate
+    expect(status.bitrate === null || typeof status.bitrate === 'number').to.be.eq(true);
+    expect(events[events.length - 1]).to.deep.eq(status);
+
+    await can.close();
+
+    expect(await can.status()).to.deep.eq(CLOSED);
+    expect(events[events.length - 1]).to.deep.eq(CLOSED);
+  });
+
+  it('should report a disconnected interface until the port is closed', async () => {
+
+    let can = new CsSocketcan({ ...CAN_OPTIONS, statusInterval: 0 });
+    let iface = await getInterface(can);
+    await can.open(iface);
+    await can.status();
+
+    // What the socketcan module does when the interface is removed
+    let p = new Promise((resolve) => can.once('status', resolve));
+    can._stopping = false;
+    can.can.stop();
+    let status = await p;
+
+    expect(status).to.include({ port: iface, connection: 'disconnected', state: null });
+    expect(can.isConnected()).to.not.be.ok;
+    expect(can.isOpen()).to.be.ok;
+
+    await can.close();
+    expect(await can.status()).to.deep.eq(CLOSED);
   });
 });
 

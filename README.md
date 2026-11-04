@@ -85,6 +85,12 @@ let can = new Can({
 
   // useful for testing, each sent packet is also received
   loopback: false,
+
+  // how often to check the status while the port is open, in milliseconds,
+  // so that changes are noticed (and 'status' events emitted) even when no
+  // frames are sent or received; 0 to only check when status() or
+  // errorStats() is called. Each check runs `ip`.
+  statusInterval: 1000,
   });
 ```
 
@@ -104,6 +110,7 @@ The module emits the following events:
  - `error` if an error occurs
  - `data` when an incoming CAN bus frame is received (error frames are not emitted; see [Error Statistics](#error-statistics))
  - `write` when an outgoing CAN bus frame is sent to the device (the event is emitted before the frame is actually sent on the bus)
+ - `status` when the status of the port changes (see [Status](#status))
  - `close` when the port is closed
 
 To listen for the events, use the typical NodeJS EventEmitter pattern:
@@ -174,6 +181,29 @@ In this module:
  - Error frames are reported by the kernel driver. Many drivers only report bus errors (as opposed to state changes) when bus error reporting is turned on, which is done when the interface is configured, e.g. `sudo ip link set can0 type can bitrate 250000 berr-reporting on`. Drivers that can't report bus errors, or report them without their type, leave `errors` at zero or count them as `other`.
  - `state`, `txErrorCounter` and `rxErrorCounter` are read from the interface with `ip -details -json link show` (from iproute2) if possible. Otherwise they are the last values reported in an error frame, and `null` until one is received. Virtual (`vcan`) interfaces have no state.
  - Error frames are counted, and are not emitted as `data` events.
+
+### Status
+
+`status()` returns a Promise that resolves with the status of the port. The object has the same fields in all of the CAN adapter modules used by `@csllc/cs-canbus-universal`; a field whose value is not available is `null`. Whenever the status changes, a `status` event is emitted with the new status.
+
+```js
+{
+  port: 'can0',              // the port that is open (as passed to open()); null if closed
+  connection: 'connected', // 'closed', 'connected', or 'disconnected' (the adapter stopped responding, e.g. was unplugged, while the port was open)
+  state: 'error-active',   // 'error-active', 'error-warning', 'error-passive', 'bus-off', 'stopped', 'sleeping', or null
+  bitrate: 250000,         // bit rate in use, in bit/s
+}
+```
+
+`state` is the same as in [Error Statistics](#error-statistics), and is `null` unless `connection` is `'connected'`. A port that is `'disconnected'` stays that way until it is closed; `isConnected()` returns false for it.
+
+```js
+can.on('status', (status) => {
+  console.log(status.connection, status.state);
+});
+```
+
+In this module, `state` and `bitrate` are read from the interface with `ip -details -json link show` (from iproute2). If the interface doesn't report a state, `state` is the last one reported in an error frame, and `null` until one is received; virtual (`vcan`) interfaces have no state or bit rate. A bit rate change needs the interface to be brought down, which shows as `state: 'stopped'`. The adapter is taken to be disconnected when its network interface is removed (e.g. a USB adapter is unplugged); `isOpen()` still returns true until the port is closed.
 
 ## Using Kvaser Adapters on Rasbperry Pi
 

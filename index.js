@@ -12,7 +12,23 @@ const { Duplex } = require('stream');
 const DEFAULT_OPTIONS = {
   canRate: 250000,
   loopback: false,
+  // How often to check the status while the port is open, in milliseconds,
+  // so that changes are noticed even when no frames are being sent or
+  // received; 0 to only check it when status() or errorStats() is called.
+  // Each check runs `ip`.
+  statusInterval: 1000,
 };
+
+// Returns the status of a port that isn't open
+function closedStatus() {
+  return { port: null, connection: 'closed', state: null, bitrate: null };
+}
+
+// Returns whether two status objects are the same
+function sameStatus(a, b) {
+  return a.port === b.port && a.connection === b.connection &&
+    a.state === b.state && a.bitrate === b.bitrate;
+}
 
 // Network interfaces are listed in sysfs. We can't use os.networkInterfaces()
 // because it only returns interfaces that have been assigned an IP address.
@@ -148,6 +164,12 @@ module.exports = class Socketcan extends Duplex {
     this.isReady = false;
     this.enableTimestamps = false;
     this._errorCounters = newErrorCounters();
+    this._lastStatus = closedStatus(); // last status reported or emitted
+    this._disconnected = false; // the interface went away while open
+    this._stopping = false; // close() is stopping the channel
+    this._bitrate = null; // last bit rate reported for the interface
+    this._statusTimer = undefined;
+    this._statusCheck = null; // status check in progress
   }
 
   // Sets (or re-sets) the configuration options
@@ -194,11 +216,23 @@ module.exports = class Socketcan extends Duplex {
         // Data receive event handler
         this.can.addListener("onMessage", this._onData.bind(this));
 
+        // The channel stops by itself if the interface is removed (e.g. a
+        // USB adapter is unplugged); it also stops when close() stops it
+        this.can.addListener("onStopped", () => {
+          if (!this._stopping && this.isOpen()) {
+            this._disconnected = true;
+            this._updateStatus();
+          }
+        });
+
         // Start the bus
         this.can.start();
 
         this._errorCounters = newErrorCounters();
         this._errorCounters.since = new Date();
+        this._disconnected = false;
+        this._stopping = false;
+        this._bitrate = null;
 
         this.port = port;
         this._configure();
@@ -210,6 +244,13 @@ module.exports = class Socketcan extends Duplex {
         });
 
         this.emit('open');
+
+        // Report the status of the open channel, and keep checking it
+        this._updateStatus();
+        if (this.options.statusInterval > 0) {
+          this._statusTimer = setInterval(() => this._updateStatus(), this.options.statusInterval);
+          this._statusTimer.unref(); // don't keep the process running
+        }
 
         resolve();
       } catch(err) {
@@ -226,11 +267,29 @@ module.exports = class Socketcan extends Duplex {
         reject(new Error("CAN port is undefined"));
         return;
       }
+      clearInterval(this._statusTimer);
+      this._statusTimer = undefined;
+
+      // Report the closed status while the listeners are still attached
+      if (this._lastStatus.connection !== 'closed') {
+        this._lastStatus = closedStatus();
+        this.emit('status', closedStatus());
+      }
+
       // Remove listeners
       this.removeAllListeners();
       if (this.isOpen()) {
-        // Close CAN port
-        this.can.stop();
+        // Close CAN port. If the interface went away, the channel has already
+        // stopped.
+        this._stopping = true;
+        try {
+          this.can.stop();
+        } catch (err) {
+          if (!this._disconnected) {
+            reject(err);
+            return;
+          }
+        }
       }
       // Close stream
       this.emit('close');
@@ -238,6 +297,8 @@ module.exports = class Socketcan extends Duplex {
       this.can = undefined;
       this.port = undefined;
       this.isReady = false;
+      this._disconnected = false;
+      this._bitrate = null;
       this.push(null);
 
       resolve();
@@ -293,14 +354,10 @@ module.exports = class Socketcan extends Duplex {
     });
   }
 
-  status() {
-    return new Promise((resolve, reject) => {
-      if (this.port === undefined || this.port === null) {
-        reject(new Error("CAN port is undefined"));
-      } else {
-        resolve({ port: this.port, open: !!this.isOpen() });
-      }
-    });
+  // Resolves with the current status of the port. A 'status' event is emitted
+  // with the same object whenever it changes.
+  async status() {
+    return Object.assign({}, (await this._updateStatus()).status);
   }
 
   // Resolves with bus error statistics. The counters cover the time since the
@@ -309,13 +366,12 @@ module.exports = class Socketcan extends Duplex {
   // an error frame. Fields whose value is not known are null.
   async errorStats() {
     const c = this._errorCounters;
-    let state = null;
+    const { status, info } = await this._updateStatus();
+    const state = status.state;
     let txErrorCounter = null;
     let rxErrorCounter = null;
 
-    if (this.isOpen()) {
-      const info = await this._readCanInfo();
-      state = (info && IP_CAN_STATES[info.state]) || c.state;
+    if (status.connection === 'connected') {
       const berr = info && info.berr_counter;
       if (berr && typeof berr.tx === 'number' && typeof berr.rx === 'number') {
         txErrorCounter = berr.tx;
@@ -349,9 +405,75 @@ module.exports = class Socketcan extends Duplex {
     return this.port && this.isReady;
   }
 
-  // Required function for cs-modbus GenericConnection
+  // Required function for cs-modbus GenericConnection. False if the interface
+  // went away (e.g. a USB adapter was unplugged) while the port was open.
   isConnected() {
-    return this.isOpen();
+    return !!this.isOpen() && !this._disconnected;
+  }
+
+  // Reads the current status of the port. Resolves with the status, and the
+  // CAN details of the interface reported by `ip` (or null).
+  async _readStatus() {
+    if (!this.isOpen()) {
+      return { status: closedStatus(), info: null };
+    }
+
+    const port = this.port;
+    const disconnected = () => ({
+      status: { port, connection: 'disconnected', state: null, bitrate: this._bitrate },
+      info: null,
+    });
+
+    // A removed interface disappears from sysfs, even if the channel hasn't
+    // noticed yet
+    if (!this._disconnected && !fs.existsSync(path.join(SYSFS_NET, port))) {
+      this._disconnected = true;
+    }
+    if (this._disconnected) {
+      return disconnected();
+    }
+
+    const info = await this._readCanInfo();
+
+    // The port may have been closed, or the interface removed, meanwhile
+    if (!this.isOpen() || this.port !== port) {
+      return { status: closedStatus(), info: null };
+    }
+    if (this._disconnected) {
+      return disconnected();
+    }
+
+    const bitrate = info && info.bittiming && info.bittiming.bitrate;
+    if (typeof bitrate === 'number') {
+      this._bitrate = bitrate;
+    }
+
+    return {
+      status: {
+        port,
+        connection: 'connected',
+        state: (info && IP_CAN_STATES[info.state]) || this._errorCounters.state,
+        bitrate: this._bitrate,
+      },
+      info,
+    };
+  }
+
+  // Reads the current status, and emits a 'status' event if it changed.
+  // Resolves like _readStatus(). Calls made while a check is in progress
+  // share its result, so that `ip` isn't run more than once at a time.
+  _updateStatus() {
+    if (!this._statusCheck) {
+      this._statusCheck = this._readStatus().then((result) => {
+        this._statusCheck = null;
+        if (!sameStatus(result.status, this._lastStatus)) {
+          this._lastStatus = result.status;
+          this.emit('status', Object.assign({}, result.status));
+        }
+        return result;
+      });
+    }
+    return this._statusCheck;
   }
 
   _onData(msg) {
